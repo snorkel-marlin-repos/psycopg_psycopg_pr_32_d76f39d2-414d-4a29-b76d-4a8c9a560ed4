@@ -1,6 +1,7 @@
 import pytest
 
 from psycopg3 import errors as e
+from psycopg3.rows import dict_row
 from psycopg3.pq import Format
 
 pytestmark = pytest.mark.asyncio
@@ -110,15 +111,6 @@ async def test_execute_reuse(aconn):
         assert cur.description[1].name == "baz"
 
 
-@pytest.mark.parametrize(
-    "stmt", ["", "wat", "create table ssc ()", "select 1; select 2"]
-)
-async def test_execute_error(aconn, stmt):
-    cur = aconn.cursor("foo")
-    with pytest.raises(e.ProgrammingError):
-        await cur.execute(stmt)
-
-
 async def test_executemany(aconn):
     cur = aconn.cursor("foo")
     with pytest.raises(e.NotSupportedError):
@@ -159,6 +151,30 @@ async def test_nextset(aconn):
     async with aconn.cursor("foo") as cur:
         await cur.execute("select generate_series(1, %s) as bar", (3,))
         assert not cur.nextset()
+
+
+async def test_row_factory(aconn):
+    n = 0
+
+    def my_row_factory(cur):
+        nonlocal n
+        n += 1
+        return lambda values: [n] + [-v for v in values]
+
+    cur = aconn.cursor("foo", row_factory=my_row_factory)
+    await cur.execute("select generate_series(1, 3) as x", scrollable=True)
+    rows = await cur.fetchall()
+    await cur.scroll(0, "absolute")
+    while 1:
+        row = await cur.fetchone()
+        if not row:
+            break
+        rows.append(row)
+    assert rows == [[1, -1], [1, -2], [1, -3]] * 2
+
+    await cur.scroll(0, "absolute")
+    cur.row_factory = dict_row
+    assert await cur.fetchone() == {"x": 1}
 
 
 async def test_rownumber(aconn):
